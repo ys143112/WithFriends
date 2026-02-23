@@ -1,19 +1,15 @@
 using UnityEngine;
+using Unity.Netcode;
 
-public class PlayerStats : MonoBehaviour
+public class PlayerStats : NetworkBehaviour
 {
-    public int MaxHp;
-    public int Atk;
-    public float MoveSpeed;
+    [Header("Base Stats")]
+    public int maxHp = 100;
 
-    // 전투용 추가
-    public float AttackRange = 1.8f;   // Warrior 기본
-    public float AttackCooldown = 0.4f;
+    public int MaxHp => maxHp;
 
-    public void SetFromClass(ClassDefinition def)
+    public override void OnNetworkSpawn()
     {
-        MaxHp = def.baseHp;
-        Atk = def.baseAtk;
-        MoveSpeed = def.moveSpeed;
+        // 필요 시 서버 초기화 로직
     }
 }
