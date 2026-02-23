@@ -18,18 +18,20 @@ public class PlayerMove : NetworkBehaviour
     public float doubleJumpHeight = 1.1f;
 
     [Header("Animation")]
-    public Animator animator; // 비워도 GetComponentInChildren로 자동 바인딩
+    public Animator animator;
 
     CharacterController cc;
     float yVel;
     int jumpsUsed;
 
-    // Animator hashes (오타 방지 + 성능)
+    // ✅ 외부 속도 배율(ADS/디버프 등)
+    float externalSpeedMul = 1f;
+
+    // Animator hashes
     static readonly int AnimSpeed = Animator.StringToHash("Speed");
     static readonly int AnimGrounded = Animator.StringToHash("Grounded");
     static readonly int AnimRunning = Animator.StringToHash("Running");
     static readonly int AnimYVel = Animator.StringToHash("YVel");
-    static readonly int AnimJumpTrig = Animator.StringToHash("Jump");
 
     void Awake()
     {
@@ -41,9 +43,14 @@ public class PlayerMove : NetworkBehaviour
     {
         if (!IsOwner)
         {
-            enabled = false; // 이동 입력은 로컬만
+            enabled = false; // 입력은 로컬만
             return;
         }
+    }
+
+    public void SetExternalSpeedMultiplier(float mul)
+    {
+        externalSpeedMul = Mathf.Clamp(mul, 0.1f, 2f);
     }
 
     void Update()
@@ -57,7 +64,7 @@ public class PlayerMove : NetworkBehaviour
         if (inputMove.sqrMagnitude > 1f) inputMove.Normalize();
 
         bool run = Input.GetKey(KeyCode.LeftShift);
-        float targetSpeed = walkSpeed * (run ? runMultiplier : 1f);
+        float targetSpeed = walkSpeed * (run ? runMultiplier : 1f) * externalSpeedMul;
 
         // 지면 처리
         if (cc.isGrounded)
@@ -86,7 +93,6 @@ public class PlayerMove : NetworkBehaviour
             }
         }
 
-
         // 중력
         yVel += gravity * Time.deltaTime;
 
@@ -94,12 +100,13 @@ public class PlayerMove : NetworkBehaviour
         float control = cc.isGrounded ? 1f : airControl;
         Vector3 planarVel = inputMove * (targetSpeed * control);
         Vector3 vel = planarVel + Vector3.up * yVel;
+
         cc.Move(vel * Time.deltaTime);
 
-        // ✅ 애니 파라미터 업데이트(매 프레임)
+        // 애니 파라미터
         if (animator)
         {
-            float speed01 = Mathf.Clamp01(planarVel.magnitude / (walkSpeed * runMultiplier)); // 0~1
+            float speed01 = Mathf.Clamp01(planarVel.magnitude / (walkSpeed * runMultiplier));
             animator.SetFloat(AnimSpeed, speed01, 0.08f, Time.deltaTime);
             animator.SetBool(AnimRunning, run && inputMove.sqrMagnitude > 0.01f);
             animator.SetBool(AnimGrounded, cc.isGrounded);

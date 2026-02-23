@@ -1,27 +1,24 @@
 using UnityEngine;
 using Unity.Netcode;
 
-/// <summary>
-/// 3인칭 히트스캔 총 (정석 단계 2 + FX)
-/// - 입력/조준 레이 계산: Owner
-/// - 판정/스프레드/연사 제한/데미지: Server
-/// - FX(트레이서/임팩트): Server -> All ClientRpc
-/// </summary>
 public class GunController : NetworkBehaviour
 {
     [Header("Refs")]
-    public Camera aimCamera;
-    public Transform shootOrigin;
-    public LayerMask hitMask = ~0;
-    public LayerMask enemyMask;
+    public Camera aimCamera;                 // Owner에서 Camera.main
+    public Transform shootOrigin;            // TP/ADS에서 스왑
+    public LayerMask hitMask = ~0;           // Enemy/Wall 포함
+    public LayerMask enemyMask;              // Enemy 레이어
 
     [Header("Gun")]
     public int damage = 10;
     public float fireRate = 12f;
     public float range = 200f;
-    [Tooltip("탄퍼짐(도). 서버에서만 적용됨")]
     public float spreadAngle = 1.0f;
     public bool holdToFire = true;
+
+    [Header("ADS (server spread)")]
+    [Tooltip("ADS 때 서버 스프레드를 얼마나 줄일지(0.25 = 1/4). ThirdPersonCamera가 이 값을 서버에 전달함.")]
+    public float adsSpreadMultiplierServer = 0.25f;
 
     [Header("Ammo (optional)")]
     public bool useAmmo = false;
@@ -32,13 +29,20 @@ public class GunController : NetworkBehaviour
     public bool enableFxRpc = true;
     public float tracerDuration = 0.05f;
     public float impactNormalOffset = 0.02f;
-    public ParticleSystem impactFxPrefab; // 있으면 생성(클라에서)
+    public ParticleSystem impactFxPrefab;
+
+    [Header("Recoil (local casual)")]
+    public float recoilPitchKick = 1.2f;
+    public float recoilYawKickRandom = 0.45f;
 
     int ammoInMag;
     bool reloading;
 
     float _nextLocalFireTime;
     float _nextServerFireTime;
+
+    // 서버에서만 의미있는 ADS 스프레드 배율(ThirdPersonCamera가 SetAdsServerRpc로 갱신)
+    float _spreadMul = 1f;
 
     void Start()
     {
@@ -77,8 +81,13 @@ public class GunController : NetworkBehaviour
 
         if (useAmmo) ammoInMag--;
 
-        // 로컬 즉시 연출(선택): 반동/총구화염/사운드
-        // PlayLocalMuzzleFlash(); PlayLocalRecoil(); PlayLocalSfx();
+        // ✅ 로컬 반동(캐주얼)
+        var tpc = GetComponent<ThirdPersonCamera>();
+        if (tpc != null)
+        {
+            float yawKick = Random.Range(-recoilYawKickRandom, recoilYawKickRandom);
+            tpc.AddRecoil(recoilPitchKick, yawKick);
+        }
 
         // 클라에서 카메라 중앙 레이 전송
         var cam = aimCamera != null ? aimCamera : Camera.main;
@@ -112,7 +121,15 @@ public class GunController : NetworkBehaviour
     }
 
     // -------------------------
-    // Server
+    // Server: ADS 상태 전달 (ThirdPersonCamera가 호출)
+    [ServerRpc]
+    public void SetAdsServerRpc(bool on, float adsSpreadMultiplier)
+    {
+        _spreadMul = on ? Mathf.Clamp01(adsSpreadMultiplier) : 1f;
+    }
+
+    // -------------------------
+    // Server: Shoot
 
     [ServerRpc]
     void RequestShootServerRpc(Vector3 clientRayOrigin, Vector3 clientRayDir)
@@ -127,43 +144,47 @@ public class GunController : NetworkBehaviour
         if (clientRayDir.sqrMagnitude < 0.5f) return;
         clientRayDir.Normalize();
 
-        // 카메라 origin 검증(너무 멀면 보정)
+        // 카메라 origin 검증
         Vector3 playerPos = transform.position;
         if ((clientRayOrigin - playerPos).sqrMagnitude > 25f * 25f)
             clientRayOrigin = playerPos + Vector3.up * 1.4f;
 
         Vector3 shootPos = GetShootPosServer();
-
-        // 클라 레이 기준 조준점 추정
         Vector3 aimPoint = GetAimPointFromClientRay(clientRayOrigin, clientRayDir);
 
-        // shootPos -> aimPoint 방향
         Vector3 dir = aimPoint - shootPos;
         float dist = dir.magnitude;
         if (dist < 0.01f) dir = transform.forward;
         else dir /= dist;
 
-        // 서버 스프레드(결정적 시드)
+        // 서버 스프레드(ADS 배율 반영)
         uint seed = MakeShotSeed();
-        dir = ApplySpreadDeterministic(dir, spreadAngle, seed);
+        dir = ApplySpreadDeterministic(dir, spreadAngle * _spreadMul, seed);
 
         Vector3 fxEnd = shootPos + dir * range;
 
-        // 판정
         if (Physics.Raycast(shootPos, dir, out RaycastHit hit, range, hitMask, QueryTriggerInteraction.Ignore))
         {
             fxEnd = hit.point;
 
-            // Enemy만 데미지
-            if (((1 << hit.collider.gameObject.layer) & enemyMask.value) != 0)
+            var enemy = hit.collider.GetComponentInParent<EnemyStats>();
+            if (enemy != null && enemy.NetworkObject != null && (((1 << hit.collider.gameObject.layer) & enemyMask.value) != 0))
             {
-                var enemy = hit.collider.GetComponentInParent<EnemyStats>();
-                if (enemy != null)
-                    enemy.TakeDamage(damage);
-            }
+                enemy.TakeDamage(damage);
 
-            if (enableFxRpc)
-                HitImpactClientRpc(hit.point, hit.normal);
+                // ✅ 적 로컬좌표로 임팩트 전송(보간 오차로 벽에 박혀 보이는 문제 해결)
+                ulong enemyId = enemy.NetworkObjectId;
+                Vector3 localPoint = enemy.transform.InverseTransformPoint(hit.point);
+                Vector3 localNormal = enemy.transform.InverseTransformDirection(hit.normal);
+
+                if (enableFxRpc)
+                    HitImpactOnEnemyClientRpc(enemyId, localPoint, localNormal);
+            }
+            else
+            {
+                if (enableFxRpc)
+                    HitImpactWorldClientRpc(hit.point, hit.normal);
+            }
         }
 
         if (enableFxRpc)
@@ -224,28 +245,44 @@ public class GunController : NetworkBehaviour
     [ClientRpc]
     void ShotFxClientRpc(Vector3 from, Vector3 to)
     {
-        // 최소 구현: 디버그 라인
         Debug.DrawLine(from, to, Color.yellow, tracerDuration);
-
-        // 진짜 트레이서를 원하면:
-        // - LineRenderer 풀링
-        // - 또는 TrailRenderer 풀링
-        // 여기선 컴파일만 되는 형태로 남겨둠
     }
 
     [ClientRpc]
-    void HitImpactClientRpc(Vector3 point, Vector3 normal)
+    void HitImpactWorldClientRpc(Vector3 point, Vector3 normal)
+    {
+        SpawnImpactFx(point, normal, parent: null);
+    }
+
+    [ClientRpc]
+    void HitImpactOnEnemyClientRpc(ulong enemyId, Vector3 localPoint, Vector3 localNormal)
+    {
+        if (impactFxPrefab == null) return;
+        if (NetworkManager.Singleton == null) return;
+
+        if (!NetworkManager.Singleton.SpawnManager.SpawnedObjects.TryGetValue(enemyId, out var netObj))
+            return; // 이미 despawn이면 스킵
+
+        Transform t = netObj.transform;
+        Vector3 worldPoint = t.TransformPoint(localPoint);
+        Vector3 worldNormal = t.TransformDirection(localNormal).normalized;
+
+        // ✅ 적에 붙여서 생성(더 자연스러움)
+        SpawnImpactFx(worldPoint, worldNormal, parent: t);
+    }
+
+    void SpawnImpactFx(Vector3 point, Vector3 normal, Transform parent)
     {
         if (impactFxPrefab == null) return;
 
         Vector3 pos = point + normal * impactNormalOffset;
         Quaternion rot = Quaternion.LookRotation(normal);
 
-        // 네트워크 스폰할 필요 없음(순수 시각효과)
-        var fx = Instantiate(impactFxPrefab, pos, rot);
-        fx.Play();
+        var fx = parent != null
+            ? Instantiate(impactFxPrefab, pos, rot, parent)
+            : Instantiate(impactFxPrefab, pos, rot);
 
-        // 파티클 끝나면 제거
+        fx.Play(true);
         Destroy(fx.gameObject, 2f);
     }
 }
