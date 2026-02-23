@@ -31,14 +31,21 @@ public class ThirdPersonCamera : NetworkBehaviour
     public float adsSensitivityMultiplier = 0.7f;
     public float adsMoveSpeedMultiplier = 0.7f;
 
-    [Header("Camera Collision (ADS only)")]
-    public bool enableCameraCollisionInAds = true;
-    public float cameraCollisionRadius = 0.15f;
-    public float cameraCollisionMaskDistancePadding = 0.02f;
-    public LayerMask cameraCollisionMask = ~0; // Wall/Ground만 남기기 권장
+    [Header("Camera Collision (TP + ADS)")]
+    public bool enableCameraCollision = true;
+
+    [Tooltip("카메라를 구(반지름)로 보고 충돌 체크. 값이 작으면 땅/벽에 더 잘 박힘.")]
+    public float cameraCollisionRadius = 0.18f;
+
+    [Tooltip("충돌면에서 카메라를 얼마나 띄울지(너무 작으면 살짝 관통/깜빡 가능).")]
+    public float cameraCollisionPadding = 0.05f;
+
+    [Tooltip("Ground/Wall/Environment만 포함 권장 (Player/Enemy 제외)")]
+    public LayerMask cameraCollisionMask = ~0;
 
     [Header("Recoil (Casual, Local Only)")]
     public float recoilReturnSpeed = 20f;
+
     float recoilYaw;
     float recoilPitch;
     float recoilYawVel;
@@ -112,37 +119,67 @@ public class ThirdPersonCamera : NetworkBehaviour
         // 목표 holder 선택
         Transform targetHolder = (IsAds && cameraHolderADS != null) ? cameraHolderADS : cameraHolderTP;
 
-        // 카메라 따라가기
+        // 목표 포즈로 부드럽게 따라가기(원본 desired)
         Vector3 desiredPos = Vector3.Lerp(cam.transform.position, targetHolder.position, followSmooth * Time.deltaTime);
         Quaternion desiredRot = Quaternion.Lerp(cam.transform.rotation, targetHolder.rotation, followSmooth * Time.deltaTime);
 
+        // ✅ TP/ADS 모두 충돌 보정
+        if (enableCameraCollision)
+            desiredPos = ResolveCameraCollision(desiredPos);
+
         cam.transform.position = desiredPos;
         cam.transform.rotation = desiredRot;
-
-        // ADS에서만 카메라 충돌 보정(벽에 박히는 것 완화)
-        if (IsAds && enableCameraCollisionInAds)
-            ApplyCameraCollision();
 
         // FOV
         float targetFov = IsAds ? adsFov : normalFov;
         cam.fieldOfView = Mathf.Lerp(cam.fieldOfView, targetFov, fovLerpSpeed * Time.deltaTime);
     }
 
-    void ApplyCameraCollision()
+    Vector3 ResolveCameraCollision(Vector3 desiredCamPos)
     {
         Vector3 pivotPos = cameraPivot.position;
-        Vector3 desiredPos = cam.transform.position;
-        Vector3 dir = desiredPos - pivotPos;
+
+        Vector3 dir = desiredCamPos - pivotPos;
         float dist = dir.magnitude;
-        if (dist < 0.01f) return;
+        if (dist < 0.01f) return desiredCamPos;
 
         dir /= dist;
 
-        if (Physics.SphereCast(pivotPos, cameraCollisionRadius, dir,
-            out RaycastHit hit, dist, cameraCollisionMask, QueryTriggerInteraction.Ignore))
+        // 여러 개 맞을 수 있으니 "자기 몸" 제외하고 가장 가까운 것 선택
+        RaycastHit[] hits = Physics.SphereCastAll(
+            pivotPos,
+            cameraCollisionRadius,
+            dir,
+            dist,
+            cameraCollisionMask,
+            QueryTriggerInteraction.Ignore);
+
+        if (hits == null || hits.Length == 0)
+            return desiredCamPos;
+
+        float best = float.MaxValue;
+        RaycastHit bestHit = default;
+        bool found = false;
+
+        for (int i = 0; i < hits.Length; i++)
         {
-            cam.transform.position = hit.point - dir * cameraCollisionMaskDistancePadding;
+            var h = hits[i];
+            if (h.collider == null) continue;
+
+            // ✅ 자기 자신(플레이어 루트/자식 콜라이더)이면 무시
+            if (h.collider.transform.root == transform) continue;
+
+            if (h.distance < best)
+            {
+                best = h.distance;
+                bestHit = h;
+                found = true;
+            }
         }
+
+        if (!found) return desiredCamPos;
+
+        return bestHit.point - dir * cameraCollisionPadding;
     }
 
     void ApplyAdsState(bool on, bool force = false)

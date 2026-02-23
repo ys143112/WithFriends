@@ -202,7 +202,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d5a57f767e5e46a458fc5d3c628d0cbb, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Unity.Netcode.Runtime::Unity.Netcode.NetworkObject
-  GlobalObjectIdHash: 3137230518
+  GlobalObjectIdHash: 2999525308
   InScenePlacedSourceGlobalObjectIdHash: 0
   DeferredDespawnTick: 0
   Ownership: 1
@@ -463,12 +463,12 @@ MonoBehaviour:
   fovLerpSpeed: 14
   adsSensitivityMultiplier: 0.7
   adsMoveSpeedMultiplier: 0.7
-  enableCameraCollisionInAds: 1
-  cameraCollisionRadius: 0.15
-  cameraCollisionMaskDistancePadding: 0.02
+  enableCameraCollision: 1
+  cameraCollisionRadius: 0.18
+  cameraCollisionPadding: 0.05
   cameraCollisionMask:
     serializedVersion: 2
-    m_Bits: 1
+    m_Bits: 64
   recoilReturnSpeed: 20
 --- !u!114 &3491224397387807068
 MonoBehaviour:
@@ -487,7 +487,7 @@ MonoBehaviour:
   shootOrigin: {fileID: 0}
   hitMask:
     serializedVersion: 2
-    m_Bits: 1025
+    m_Bits: 1088
   enemyMask:
     serializedVersion: 2
     m_Bits: 1024
