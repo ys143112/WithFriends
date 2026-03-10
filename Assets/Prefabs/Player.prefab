@@ -416,6 +416,7 @@ MonoBehaviour:
   impactFxPrefab: {fileID: 19800006, guid: a49596ebf788acd4ab1281bffea444b1, type: 3}
   recoilPitchKick: 1.2
   recoilYawKickRandom: 0.45
+  tracerPrefab: {fileID: 8962993212648206806, guid: e6c9a4ae2773b884c9ea4f5f09a9de34, type: 3}
 --- !u!1 &2627858111779418315
 GameObject:
   m_ObjectHideFlags: 0

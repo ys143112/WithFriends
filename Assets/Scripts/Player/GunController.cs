@@ -35,6 +35,9 @@ public class GunController : NetworkBehaviour
     public float recoilPitchKick = 1.2f;
     public float recoilYawKickRandom = 0.45f;
 
+    [Header("Tracer")]
+    public BulletTracer tracerPrefab;
+
     int ammoInMag;
     bool reloading;
 
@@ -120,6 +123,56 @@ public class GunController : NetworkBehaviour
         reloading = false;
     }
 
+    
+
+    Vector3 GetShootPosServer()
+    {
+        if (shootOrigin != null) return shootOrigin.position;
+        return transform.position + transform.forward * 0.8f + Vector3.up * 1.2f;
+    }
+
+    Vector3 GetAimPointFromClientRay(Vector3 rayOrigin, Vector3 rayDir)
+    {
+        if (Physics.Raycast(rayOrigin, rayDir, out RaycastHit hit, range, hitMask, QueryTriggerInteraction.Ignore))
+            return hit.point;
+
+        return rayOrigin + rayDir * range;
+    }
+
+    uint MakeShotSeed()
+    {
+        unchecked
+        {
+            uint a = (uint)Time.frameCount;
+            uint b = (uint)OwnerClientId * 73856093u;
+            uint c = (uint)NetworkObjectId * 19349663u;
+            return a ^ b ^ c;
+        }
+    }
+
+    Vector3 ApplySpreadDeterministic(Vector3 dir, float angleDeg, uint seed)
+    {
+        if (angleDeg <= 0.0001f) return dir;
+
+        float half = angleDeg * 0.5f;
+
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        float r1 = (seed & 0xFFFF) / 65535f;
+
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        float r2 = (seed & 0xFFFF) / 65535f;
+
+        float yaw = Mathf.Lerp(-half, half, r1);
+        float pitch = Mathf.Lerp(-half, half, r2);
+
+        Quaternion rot = Quaternion.Euler(pitch, yaw, 0f);
+        return (rot * dir).normalized;
+    }
+
     // -------------------------
     // Server: ADS 상태 전달 (ThirdPersonCamera가 호출)
     [ServerRpc]
@@ -171,7 +224,7 @@ public class GunController : NetworkBehaviour
             if (enemy != null && enemy.NetworkObject != null && (((1 << hit.collider.gameObject.layer) & enemyMask.value) != 0))
             {
                 enemy.TakeDamage(damage);
-
+                ShowHitMarkerClientRpc(OwnerClientId);
                 // ✅ 적 로컬좌표로 임팩트 전송(보간 오차로 벽에 박혀 보이는 문제 해결)
                 ulong enemyId = enemy.NetworkObjectId;
                 Vector3 localPoint = enemy.transform.InverseTransformPoint(hit.point);
@@ -191,61 +244,16 @@ public class GunController : NetworkBehaviour
             ShotFxClientRpc(shootPos, fxEnd);
     }
 
-    Vector3 GetShootPosServer()
-    {
-        if (shootOrigin != null) return shootOrigin.position;
-        return transform.position + transform.forward * 0.8f + Vector3.up * 1.2f;
-    }
-
-    Vector3 GetAimPointFromClientRay(Vector3 rayOrigin, Vector3 rayDir)
-    {
-        if (Physics.Raycast(rayOrigin, rayDir, out RaycastHit hit, range, hitMask, QueryTriggerInteraction.Ignore))
-            return hit.point;
-
-        return rayOrigin + rayDir * range;
-    }
-
-    uint MakeShotSeed()
-    {
-        unchecked
-        {
-            uint a = (uint)Time.frameCount;
-            uint b = (uint)OwnerClientId * 73856093u;
-            uint c = (uint)NetworkObjectId * 19349663u;
-            return a ^ b ^ c;
-        }
-    }
-
-    Vector3 ApplySpreadDeterministic(Vector3 dir, float angleDeg, uint seed)
-    {
-        if (angleDeg <= 0.0001f) return dir;
-
-        float half = angleDeg * 0.5f;
-
-        seed ^= seed << 13;
-        seed ^= seed >> 17;
-        seed ^= seed << 5;
-        float r1 = (seed & 0xFFFF) / 65535f;
-
-        seed ^= seed << 13;
-        seed ^= seed >> 17;
-        seed ^= seed << 5;
-        float r2 = (seed & 0xFFFF) / 65535f;
-
-        float yaw = Mathf.Lerp(-half, half, r1);
-        float pitch = Mathf.Lerp(-half, half, r2);
-
-        Quaternion rot = Quaternion.Euler(pitch, yaw, 0f);
-        return (rot * dir).normalized;
-    }
-
     // -------------------------
     // FX RPCs
 
     [ClientRpc]
     void ShotFxClientRpc(Vector3 from, Vector3 to)
     {
-        Debug.DrawLine(from, to, Color.yellow, tracerDuration);
+        if (tracerPrefab == null) return;
+
+        var tracer = Instantiate(tracerPrefab, from, Quaternion.identity);
+        tracer.Play(from, to);
     }
 
     [ClientRpc]
@@ -269,6 +277,16 @@ public class GunController : NetworkBehaviour
 
         // ✅ 적에 붙여서 생성(더 자연스러움)
         SpawnImpactFx(worldPoint, worldNormal, parent: t);
+    }
+
+    [ClientRpc]
+    void ShowHitMarkerClientRpc(ulong clientId)
+    {
+        if (NetworkManager.Singleton.LocalClientId != clientId)
+            return;
+
+        if (HitMarkerUI.Instance != null)
+            HitMarkerUI.Instance.Show();
     }
 
     void SpawnImpactFx(Vector3 point, Vector3 normal, Transform parent)
