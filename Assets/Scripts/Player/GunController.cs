@@ -85,11 +85,11 @@ public class GunController : NetworkBehaviour
         if (useAmmo) ammoInMag--;
 
         // ✅ 로컬 반동(캐주얼)
-        var tpc = GetComponent<ThirdPersonCamera>();
-        if (tpc != null)
+        var fp = GetComponent<FirstPersonCameraController>();
+        if (fp != null)
         {
             float yawKick = Random.Range(-recoilYawKickRandom, recoilYawKickRandom);
-            tpc.AddRecoil(recoilPitchKick, yawKick);
+            fp.AddRecoil(recoilPitchKick, yawKick);
         }
 
         // 클라에서 카메라 중앙 레이 전송
